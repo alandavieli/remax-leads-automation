@@ -87,6 +87,14 @@ LEADS_SINCE = os.environ.get("LEADS_SINCE", "").strip()
 BACKFILL_SINCE = os.environ.get("BACKFILL_SINCE", "").strip()
 BACKFILL_UNTIL = os.environ.get("BACKFILL_UNTIL", "").strip()
 
+# By default, even a backfill run skips any lead already recorded in
+# state.json (safe to re-run without duplicating sends). Set BACKFILL_FORCE
+# to re-preview leads that were already processed/alerted earlier - e.g. to
+# see what a lead's branded email looks like after the fact. This only
+# controls whether old leads are reconsidered; TEST_MODE still decides
+# whether the email actually reaches a real agent or gets redirected to you.
+BACKFILL_FORCE = os.environ.get("BACKFILL_FORCE", "false").strip().lower() in ("1", "true", "yes")
+
 STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
 
 GRAPH_API_VERSION = "v25.0"
@@ -415,6 +423,11 @@ def main():
     print(f"TEST_MODE is {'ON' if TEST_MODE else 'OFF'} "
           f"({'agent emails redirected to ' + TEST_RECIPIENT_EMAIL if TEST_MODE else 'sending to real agents'}).")
 
+    force_resend = is_backfill and BACKFILL_FORCE
+    if force_resend:
+        print("BACKFILL_FORCE is ON - re-considering leads even if already "
+              "processed/alerted before.")
+
     forms = get_lead_forms()
     print(f"Found {len(forms)} lead forms on the Page.")
 
@@ -431,7 +444,10 @@ def main():
             print(f"  ! Could not fetch leads for form '{form_name}': {e}")
             continue
 
-        candidate_leads = [l for l in leads if l["id"] not in processed]
+        if force_resend:
+            candidate_leads = leads
+        else:
+            candidate_leads = [l for l in leads if l["id"] not in processed]
 
         new_leads = []
         for lead in candidate_leads:
@@ -485,7 +501,7 @@ def main():
                     print(f"  ! FAILED to send lead {lead_id} to {to_email}: {e}")
                     # Do not mark as processed - we'll retry next run.
             else:
-                if lead_id in alerted:
+                if lead_id in alerted and not force_resend:
                     continue
                 html = build_alert_html(
                     form_name, lead_id, lead.get("created_time", ""), name, email, phone, qa_pairs

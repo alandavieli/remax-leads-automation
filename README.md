@@ -86,6 +86,14 @@ date range you gave it (still skipping anything already recorded in
 first, review what landed in your inbox, and only then flip `TEST_MODE` off
 and re-run the same backfill to actually deliver it to agents.
 
+**Want to re-preview leads from a date that's already been handled** (for
+example, to see the branded email design for leads that already went out
+during setup/testing)? Check the **backfill_force** box when you run the
+workflow. Normally the robot never touches a lead twice — this box tells it
+"yes, I know, show it to me again anyway." With `TEST_MODE` on, it's
+completely safe: the email is still redirected to you, never to a real
+agent, no matter how many times you re-run it.
+
 ## Running it manually (e.g. to catch up right now)
 
 1. Go to the repo on GitHub.
