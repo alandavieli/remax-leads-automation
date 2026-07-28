@@ -362,9 +362,23 @@ def send_email(to_email, subject, html_body, bcc_email=None):
     if bcc_email and bcc_email != to_email:
         envelope_recipients.append(bcc_email)
 
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.sendmail(SMTP_USERNAME, envelope_recipients, msg.as_string())
+    # Opening a fresh SMTP connection per email is simple and normally fine,
+    # but sending many in quick succession (e.g. a big backfill) can trip the
+    # mail server's own rate limiting, which shows up as a dropped connection
+    # ("Connection reset by peer"). One retry after a short pause recovers
+    # from that without giving up on the email entirely.
+    last_error = None
+    for attempt in range(2):
+        try:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.sendmail(SMTP_USERNAME, envelope_recipients, msg.as_string())
+            return
+        except Exception as e:
+            last_error = e
+            if attempt == 0:
+                time.sleep(5)
+    raise last_error
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +525,7 @@ def main():
                     print(f"  -> No route for form '{form_name}'; sent alert for lead {lead_id}")
                     alerted.add(lead_id)
                     alert_count += 1
+                    time.sleep(1)  # small, polite gap - avoids tripping SMTP rate limits
                 except Exception as e:
                     print(f"  ! FAILED to send unmatched-lead alert for {lead_id}: {e}")
 
