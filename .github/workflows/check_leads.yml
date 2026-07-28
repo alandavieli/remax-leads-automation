@@ -15,6 +15,11 @@ on:
         description: "Backfill leads until this date (YYYY-MM-DD). Leave blank for 'through now'."
         required: false
         type: string
+      backfill_force:
+        description: "Re-send leads even if already processed/alerted before? (true/false). Leave false unless you specifically want to re-preview old leads."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # needed so the workflow can save state.json back to the repo
@@ -50,6 +55,7 @@ jobs:
           LEADS_SINCE: ${{ vars.LEADS_SINCE }}
           BACKFILL_SINCE: ${{ github.event.inputs.backfill_since }}
           BACKFILL_UNTIL: ${{ github.event.inputs.backfill_until }}
+          BACKFILL_FORCE: ${{ github.event.inputs.backfill_force }}
         run: python check_leads.py
 
       - name: Save memory of processed leads
