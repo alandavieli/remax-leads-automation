@@ -95,6 +95,14 @@ BACKFILL_UNTIL = os.environ.get("BACKFILL_UNTIL", "").strip()
 # whether the email actually reaches a real agent or gets redirected to you.
 BACKFILL_FORCE = os.environ.get("BACKFILL_FORCE", "false").strip().lower() in ("1", "true", "yes")
 
+# When releasing a big batch of backfill leads for real, sending them all in
+# one run looks like a burst to the recipient's mail provider and risks spam
+# flags. Set this to only send a handful per run - the backfill window stays
+# active across runs (including the normal 10-minute scheduled check-ins),
+# so the rest trickle out a few at a time until the whole batch is done.
+# Leave at 0 (or unset) for no cap - normal backfill behavior.
+BACKFILL_MAX_PER_RUN = int((os.environ.get("BACKFILL_MAX_PER_RUN", "0").strip() or "0"))
+
 STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
 
 GRAPH_API_VERSION = "v25.0"
@@ -452,25 +460,35 @@ def main():
     routing_rows = load_routing_table()
     print(f"Loaded {len(routing_rows)} routing rules from the Google Sheet.")
 
-    # Work out the effective date window for this run.
-    is_backfill = bool(BACKFILL_SINCE or BACKFILL_UNTIL)
-    if is_backfill:
-        since_dt = parse_date_boundary(BACKFILL_SINCE)
-        until_dt = parse_date_boundary(BACKFILL_UNTIL, end_of_day=True)
-        print(f"BACKFILL RUN - considering leads from {BACKFILL_SINCE or 'the beginning'} "
-              f"to {BACKFILL_UNTIL or 'now'}.")
+    # Work out the effective date window(s) for this run. Two windows can be
+    # active at the same time:
+    #  - the LIVE window (LEADS_SINCE): always processed immediately, no cap
+    #    - this is what keeps today's real leads flowing out without delay.
+    #  - the BACKFILL window (BACKFILL_SINCE/UNTIL): a historical range being
+    #    deliberately (re-)released. If BACKFILL_MAX_PER_RUN is set, only
+    #    that many backfill-window sends happen in this run - the window
+    #    stays active across future runs (including the normal 10-minute
+    #    scheduled check-ins) so the rest trickle out gradually instead of
+    #    landing all at once.
+    live_since_dt = parse_date_boundary(LEADS_SINCE)
+    if live_since_dt:
+        print(f"Live window: considering leads created on/after {LEADS_SINCE} (no cap).")
     else:
-        since_dt = parse_date_boundary(LEADS_SINCE)
-        until_dt = None
-        if since_dt:
-            print(f"Normal run - only considering leads created on/after {LEADS_SINCE}.")
-        else:
-            print("Normal run - no LEADS_SINCE cutoff set, considering all unprocessed leads.")
+        print("Live window: no LEADS_SINCE cutoff set, considering all unprocessed leads (no cap).")
+
+    has_backfill = bool(BACKFILL_SINCE or BACKFILL_UNTIL)
+    backfill_since_dt = parse_date_boundary(BACKFILL_SINCE) if has_backfill else None
+    backfill_until_dt = parse_date_boundary(BACKFILL_UNTIL, end_of_day=True) if has_backfill else None
+    if has_backfill:
+        cap_note = (f", throttled to {BACKFILL_MAX_PER_RUN} send(s) this run"
+                    if BACKFILL_MAX_PER_RUN else " (no cap)")
+        print(f"Backfill window ALSO active: {BACKFILL_SINCE or 'the beginning'} "
+              f"to {BACKFILL_UNTIL or 'now'}{cap_note}.")
 
     print(f"TEST_MODE is {'ON' if TEST_MODE else 'OFF'} "
           f"({'agent emails redirected to ' + TEST_RECIPIENT_EMAIL if TEST_MODE else 'sending to real agents'}).")
 
-    force_resend = is_backfill and BACKFILL_FORCE
+    force_resend = has_backfill and BACKFILL_FORCE
     if force_resend:
         print("BACKFILL_FORCE is ON - re-considering leads even if already "
               "processed/alerted before.")
@@ -482,6 +500,8 @@ def main():
     sent_count = 0
     alert_count = 0
     skipped_out_of_range = 0
+    throttled_sent = 0
+    throttled_deferred = 0
 
     for form in forms:
         form_id = form["id"]
@@ -497,16 +517,21 @@ def main():
         else:
             candidate_leads = [l for l in leads if l["id"] not in processed]
 
-        new_leads = []
+        new_leads = []  # (lead, is_throttled) pairs
         for lead in candidate_leads:
             created_dt = parse_lead_created_time(lead.get("created_time", ""))
-            if since_dt and (created_dt is None or created_dt < since_dt):
+            in_live = live_since_dt is None or (created_dt is not None and created_dt >= live_since_dt)
+            in_backfill = has_backfill and created_dt is not None and (
+                (backfill_since_dt is None or created_dt >= backfill_since_dt)
+                and (backfill_until_dt is None or created_dt <= backfill_until_dt)
+            )
+            if not in_live and not in_backfill:
                 skipped_out_of_range += 1
                 continue
-            if until_dt and (created_dt is None or created_dt > until_dt):
-                skipped_out_of_range += 1
-                continue
-            new_leads.append(lead)
+            # Only leads that are ONLY in the backfill window (not also
+            # "live") are subject to the per-run cap - today's real leads
+            # are never held back.
+            new_leads.append((lead, in_backfill and not in_live))
 
         if not new_leads:
             continue
@@ -514,7 +539,11 @@ def main():
         questions_lookup = get_form_questions(form_id)
         route = match_route(form_name, routing_rows)
 
-        for lead in new_leads:
+        for lead, is_throttled in new_leads:
+            if is_throttled and BACKFILL_MAX_PER_RUN and throttled_sent >= BACKFILL_MAX_PER_RUN:
+                throttled_deferred += 1
+                continue
+
             lead_id = lead["id"]
             name, email, phone, qa_pairs = extract_lead_fields(
                 lead.get("field_data", []), questions_lookup
@@ -544,6 +573,8 @@ def main():
                         print(f"  -> Sent lead {lead_id} ({form_name}) to {to_email}")
                     processed.add(lead_id)
                     sent_count += 1
+                    if is_throttled:
+                        throttled_sent += 1
                     time.sleep(1)  # small, polite gap between sends
                 except Exception as e:
                     print(f"  ! FAILED to send lead {lead_id} ({form_name}) to {to_email}: {e}")
@@ -559,6 +590,8 @@ def main():
                     print(f"  -> No route for form '{form_name}'; sent alert for lead {lead_id}")
                     alerted.add(lead_id)
                     alert_count += 1
+                    if is_throttled:
+                        throttled_sent += 1
                     time.sleep(1)  # small, polite gap - avoids tripping SMTP rate limits
                 except Exception as e:
                     print(f"  ! FAILED to send unmatched-lead alert for {lead_id} "
@@ -570,8 +603,12 @@ def main():
     state["alerted"] = sorted(alerted)
     save_state(state)
 
-    print(f"Done. Sent {sent_count} lead email(s), {alert_count} alert(s), "
-          f"skipped {skipped_out_of_range} lead(s) outside the date window.")
+    summary = (f"Done. Sent {sent_count} lead email(s), {alert_count} alert(s), "
+               f"skipped {skipped_out_of_range} lead(s) outside the date window.")
+    if has_backfill:
+        summary += (f" Backfill: {throttled_sent} sent this run, "
+                     f"{throttled_deferred} held back for a later run.")
+    print(summary)
 
 
 if __name__ == "__main__":
