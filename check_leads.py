@@ -349,36 +349,69 @@ del formulario, y este lead se procesará solo en la siguiente ejecución
 # Sending mail
 # ---------------------------------------------------------------------------
 
-def send_email(to_email, subject, html_body, bcc_email=None):
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{FROM_NAME} <{SMTP_USERNAME}>"
-    msg["To"] = to_email
-    # Bcc is intentionally NOT added as a header - it's only used for the
-    # envelope recipient list below, so the agent never sees it was copied.
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+class SmtpClient:
+    """Keeps ONE SMTP connection open and reuses it for every email in the
+    run, instead of opening a brand-new connection (with its own TLS
+    handshake + login) for every single send. Opening dozens of fresh
+    connections in a few minutes is exactly the kind of pattern mail
+    providers flag as abusive and start dropping ("Connection reset by
+    peer") - a single reused connection looks like normal behavior and
+    avoids that entirely. If the connection does die mid-run (network
+    hiccup, server-side timeout), we transparently reconnect and retry
+    once before giving up on that particular email.
+    """
 
-    envelope_recipients = [to_email]
-    if bcc_email and bcc_email != to_email:
-        envelope_recipients.append(bcc_email)
+    def __init__(self):
+        self._server = None
 
-    # Opening a fresh SMTP connection per email is simple and normally fine,
-    # but sending many in quick succession (e.g. a big backfill) can trip the
-    # mail server's own rate limiting, which shows up as a dropped connection
-    # ("Connection reset by peer"). One retry after a short pause recovers
-    # from that without giving up on the email entirely.
-    last_error = None
-    for attempt in range(2):
-        try:
-            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
-                server.sendmail(SMTP_USERNAME, envelope_recipients, msg.as_string())
-            return
-        except Exception as e:
-            last_error = e
-            if attempt == 0:
-                time.sleep(5)
-    raise last_error
+    def _connect(self):
+        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        self._server = server
+
+    def _ensure_connected(self):
+        if self._server is None:
+            self._connect()
+
+    def send(self, to_email, subject, html_body, bcc_email=None):
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{FROM_NAME} <{SMTP_USERNAME}>"
+        msg["To"] = to_email
+        # Bcc is intentionally NOT added as a header - it's only used for the
+        # envelope recipient list below, so the agent never sees it was copied.
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+        envelope_recipients = [to_email]
+        if bcc_email and bcc_email != to_email:
+            envelope_recipients.append(bcc_email)
+
+        last_error = None
+        for attempt in range(2):
+            try:
+                self._ensure_connected()
+                self._server.sendmail(SMTP_USERNAME, envelope_recipients, msg.as_string())
+                return
+            except Exception as e:
+                last_error = e
+                # The connection is presumed dead - drop it and force a
+                # fresh one on the next attempt (or the next email).
+                try:
+                    self._server.quit()
+                except Exception:
+                    pass
+                self._server = None
+                if attempt == 0:
+                    time.sleep(5)
+        raise last_error
+
+    def close(self):
+        if self._server is not None:
+            try:
+                self._server.quit()
+            except Exception:
+                pass
+            self._server = None
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +478,7 @@ def main():
     forms = get_lead_forms()
     print(f"Found {len(forms)} lead forms on the Page.")
 
+    smtp = SmtpClient()
     sent_count = 0
     alert_count = 0
     skipped_out_of_range = 0
@@ -502,7 +536,7 @@ def main():
                     subject = f"[PRUEBA - iría a {real_recipient}] {subject}"
                 bcc_email = None if TEST_MODE else AGENT_EMAIL_BCC
                 try:
-                    send_email(to_email, subject, html, bcc_email=bcc_email)
+                    smtp.send(to_email, subject, html, bcc_email=bcc_email)
                     if TEST_MODE:
                         print(f"  -> [TEST MODE] Lead {lead_id} ({form_name}) would go to "
                               f"{real_recipient}; sent to {to_email} instead")
@@ -510,9 +544,9 @@ def main():
                         print(f"  -> Sent lead {lead_id} ({form_name}) to {to_email}")
                     processed.add(lead_id)
                     sent_count += 1
-                    time.sleep(2)  # small, polite gap between sends
+                    time.sleep(1)  # small, polite gap between sends
                 except Exception as e:
-                    print(f"  ! FAILED to send lead {lead_id} to {to_email}: {e}")
+                    print(f"  ! FAILED to send lead {lead_id} ({form_name}) to {to_email}: {e}")
                     # Do not mark as processed - we'll retry next run.
             else:
                 if lead_id in alerted and not force_resend:
@@ -521,13 +555,16 @@ def main():
                     form_name, lead_id, lead.get("created_time", ""), name, email, phone, qa_pairs
                 )
                 try:
-                    send_email(ALERT_EMAIL, f"⚠️ Lead sin campaña asignada: {form_name}", html)
+                    smtp.send(ALERT_EMAIL, f"⚠️ Lead sin campaña asignada: {form_name}", html)
                     print(f"  -> No route for form '{form_name}'; sent alert for lead {lead_id}")
                     alerted.add(lead_id)
                     alert_count += 1
                     time.sleep(1)  # small, polite gap - avoids tripping SMTP rate limits
                 except Exception as e:
-                    print(f"  ! FAILED to send unmatched-lead alert for {lead_id}: {e}")
+                    print(f"  ! FAILED to send unmatched-lead alert for {lead_id} "
+                          f"({form_name}): {e}")
+
+    smtp.close()
 
     state["processed"] = sorted(processed)
     state["alerted"] = sorted(alerted)
