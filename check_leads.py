@@ -65,6 +65,13 @@ ALERT_EMAIL = os.environ.get("ALERT_EMAIL", SMTP_USERNAME)
 TEST_MODE = os.environ.get("TEST_MODE", "true").strip().lower() in ("1", "true", "yes")
 TEST_RECIPIENT_EMAIL = os.environ.get("TEST_RECIPIENT_EMAIL", "").strip() or ALERT_EMAIL
 
+# Once TEST_MODE is off and emails really go to agents, this address gets a
+# silent Bcc on every one of those sends - a visual paper trail in your own
+# inbox even though the mail was sent by a script instead of Thunderbird.
+# Not applied while TEST_MODE is on, since the email is already landing here
+# as the primary recipient in that case.
+AGENT_EMAIL_BCC = os.environ.get("AGENT_EMAIL_BCC", "").strip() or SMTP_USERNAME
+
 # --- Which leads count as "in scope" for this run ---------------------------
 # Normal scheduled runs only ever look at leads created on/after LEADS_SINCE,
 # so an empty state.json (e.g. right after first setup) never causes a flood
@@ -334,16 +341,22 @@ del formulario, y este lead se procesará solo en la siguiente ejecución
 # Sending mail
 # ---------------------------------------------------------------------------
 
-def send_email(to_email, subject, html_body):
+def send_email(to_email, subject, html_body, bcc_email=None):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"{FROM_NAME} <{SMTP_USERNAME}>"
     msg["To"] = to_email
+    # Bcc is intentionally NOT added as a header - it's only used for the
+    # envelope recipient list below, so the agent never sees it was copied.
     msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    envelope_recipients = [to_email]
+    if bcc_email and bcc_email != to_email:
+        envelope_recipients.append(bcc_email)
 
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.sendmail(SMTP_USERNAME, [to_email], msg.as_string())
+        server.sendmail(SMTP_USERNAME, envelope_recipients, msg.as_string())
 
 
 # ---------------------------------------------------------------------------
@@ -457,8 +470,9 @@ def main():
                 subject = f"Nuevo Lead: {route['campaign_label']} - {name}".strip()
                 if TEST_MODE:
                     subject = f"[PRUEBA - iría a {real_recipient}] {subject}"
+                bcc_email = None if TEST_MODE else AGENT_EMAIL_BCC
                 try:
-                    send_email(to_email, subject, html)
+                    send_email(to_email, subject, html, bcc_email=bcc_email)
                     if TEST_MODE:
                         print(f"  -> [TEST MODE] Lead {lead_id} ({form_name}) would go to "
                               f"{real_recipient}; sent to {to_email} instead")
