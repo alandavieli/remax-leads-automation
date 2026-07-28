@@ -40,14 +40,14 @@ import requests
 # are set as GitHub Actions Secrets/Variables. Nothing sensitive is hardcoded.
 # ---------------------------------------------------------------------------
 
-FB_PAGE_ID = os.environ["FB_PAGE_ID"]
-FB_PAGE_ACCESS_TOKEN = os.environ["FB_PAGE_ACCESS_TOKEN"]
-ROUTING_SHEET_CSV_URL = os.environ["ROUTING_SHEET_CSV_URL"]
+FB_PAGE_ID = os.environ["FB_PAGE_ID"].strip()
+FB_PAGE_ACCESS_TOKEN = os.environ["FB_PAGE_ACCESS_TOKEN"].strip()
+ROUTING_SHEET_CSV_URL = os.environ["ROUTING_SHEET_CSV_URL"].strip()
 
-SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.migadu.com")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
-SMTP_USERNAME = os.environ["SMTP_USERNAME"]
-SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.migadu.com").strip()
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "465").strip())
+SMTP_USERNAME = os.environ["SMTP_USERNAME"].strip()
+SMTP_PASSWORD = os.environ["SMTP_PASSWORD"].strip()
 FROM_NAME = os.environ.get("FROM_NAME", "RE/MAX Real Estate Consultants")
 
 # Where "no routing match found" alerts get sent. Defaults to the same
@@ -120,6 +120,9 @@ def fb_get(path, params=None):
     all_data = []
     while url:
         resp = requests.get(url, params=params, timeout=30)
+        if not resp.ok:
+            print(f"Facebook API error ({resp.status_code}) calling {path}:")
+            print(resp.text)
         resp.raise_for_status()
         payload = resp.json()
         if isinstance(payload.get("data"), list):
