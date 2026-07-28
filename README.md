@@ -44,14 +44,57 @@ next run, or trigger one manually (see below), and it'll go out.
    nothing is ever emailed twice, even if the robot runs again a minute
    later.
 
+## TEST MODE — read this before going live
+
+While the `TEST_MODE` Variable is set to `true` (this is the default), the
+robot still does everything for real — reads the Sheet, matches leads,
+builds the emails — but every email that would normally go to an agent
+(Francisco, Mónica, etc.) is redirected to `TEST_RECIPIENT_EMAIL` instead
+(defaults to your ads mailbox), with the subject tagged
+`[PRUEBA - iría a agente@email.com]` so you can see exactly who would have
+received it. Unmatched-lead alerts already only go to your own inbox, so
+those are unaffected either way.
+
+**Do not flip `TEST_MODE` to `false` until you've reviewed a batch of test
+emails and are confident the routing and content are correct.** To flip it:
+GitHub → this repo → Settings → Secrets and variables → Actions → Variables
+tab → edit `TEST_MODE` → `false`.
+
+## Controlling which leads count as "new" (LEADS_SINCE)
+
+Normal scheduled runs only look at leads created on or after the date in the
+`LEADS_SINCE` Variable (format `YYYY-MM-DD`). This is what stops an empty
+memory file from suddenly treating months of old leads as brand new. Move
+this date forward or back any time by editing the Variable — no code
+changes needed.
+
+## Sending past leads on purpose (backfill)
+
+Want to (re-)send everything from, say, June 1 to June 15? You don't need a
+separate tool — trigger the same workflow manually with a date range:
+
+1. Go to the repo on GitHub → **Actions** tab.
+2. Click "Check for new Meta leads and email agents" in the left sidebar.
+3. Click "Run workflow" (top right).
+4. Fill in **backfill_since** and/or **backfill_until** (format
+   `YYYY-MM-DD`). Leave either blank to leave that end open.
+5. Click "Run workflow" to confirm.
+
+This ignores `LEADS_SINCE` for that one run and considers every lead in the
+date range you gave it (still skipping anything already recorded in
+`state.json`, so it's safe to re-run). Do this with `TEST_MODE` still on
+first, review what landed in your inbox, and only then flip `TEST_MODE` off
+and re-run the same backfill to actually deliver it to agents.
+
 ## Running it manually (e.g. to catch up right now)
 
 1. Go to the repo on GitHub.
 2. Click the "Actions" tab.
 3. Click "Check for new Meta leads and email agents" in the left sidebar.
-4. Click "Run workflow" (top right) → "Run workflow" again to confirm.
+4. Click "Run workflow" (top right) → leave the backfill fields blank for a
+   normal run → "Run workflow" again to confirm.
 5. It finishes in under a minute. Click into the run to see exactly what
-   it did (how many emails sent, any errors).
+   it did (how many emails sent, any errors, TEST_MODE status).
 
 ## If something looks wrong
 

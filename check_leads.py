@@ -29,6 +29,7 @@ import re
 import smtplib
 import sys
 import time
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote
@@ -54,12 +55,60 @@ FROM_NAME = os.environ.get("FROM_NAME", "RE/MAX Real Estate Consultants")
 # mailbox the automation sends from, so Alan sees it in the ads inbox.
 ALERT_EMAIL = os.environ.get("ALERT_EMAIL", SMTP_USERNAME)
 
+# --- Safety valve: TEST MODE -----------------------------------------------
+# While TEST_MODE is true (the default), every email that would normally go
+# to a real agent is redirected to TEST_RECIPIENT_EMAIL instead, with a
+# "[PRUEBA]" tag on the subject. Unmatched-lead alerts already only go to
+# ALERT_EMAIL (Alan's own inbox), so they are left as-is. Nothing reaches a
+# real agent's inbox until Alan deliberately sets TEST_MODE to "false" in the
+# repo's GitHub Actions Variables.
+TEST_MODE = os.environ.get("TEST_MODE", "true").strip().lower() in ("1", "true", "yes")
+TEST_RECIPIENT_EMAIL = os.environ.get("TEST_RECIPIENT_EMAIL", "").strip() or ALERT_EMAIL
+
+# --- Which leads count as "in scope" for this run ---------------------------
+# Normal scheduled runs only ever look at leads created on/after LEADS_SINCE,
+# so an empty state.json (e.g. right after first setup) never causes a flood
+# of months-old leads to go out. Set via the LEADS_SINCE repo Variable
+# (format: YYYY-MM-DD).
+#
+# To deliberately reach further back - "send me everything from June 1 to
+# June 15" - trigger the workflow manually from the Actions tab and fill in
+# the backfill_since / backfill_until inputs. When present, they replace
+# LEADS_SINCE entirely for that one run. Leads already recorded in
+# state.json are still never re-sent, backfill or not.
+LEADS_SINCE = os.environ.get("LEADS_SINCE", "").strip()
+BACKFILL_SINCE = os.environ.get("BACKFILL_SINCE", "").strip()
+BACKFILL_UNTIL = os.environ.get("BACKFILL_UNTIL", "").strip()
+
 STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
 
 GRAPH_API_VERSION = "v25.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
 CORE_FIELD_KEYS = {"full_name", "first_name", "last_name", "email", "phone_number", "phone"}
+
+
+def parse_date_boundary(value, end_of_day=False):
+    """Parses a YYYY-MM-DD string (from a Variable or workflow input) into
+    a timezone-aware datetime. Returns None if value is empty/invalid."""
+    if not value:
+        return None
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if end_of_day:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
+    except ValueError:
+        print(f"  ! Ignoring unparseable date '{value}' (expected YYYY-MM-DD)")
+        return None
+
+
+def parse_lead_created_time(created_time):
+    """Facebook returns e.g. '2026-07-20T15:04:23+0000'."""
+    try:
+        return datetime.strptime(created_time, "%Y-%m-%dT%H:%M:%S%z")
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -335,11 +384,30 @@ def main():
     routing_rows = load_routing_table()
     print(f"Loaded {len(routing_rows)} routing rules from the Google Sheet.")
 
+    # Work out the effective date window for this run.
+    is_backfill = bool(BACKFILL_SINCE or BACKFILL_UNTIL)
+    if is_backfill:
+        since_dt = parse_date_boundary(BACKFILL_SINCE)
+        until_dt = parse_date_boundary(BACKFILL_UNTIL, end_of_day=True)
+        print(f"BACKFILL RUN - considering leads from {BACKFILL_SINCE or 'the beginning'} "
+              f"to {BACKFILL_UNTIL or 'now'}.")
+    else:
+        since_dt = parse_date_boundary(LEADS_SINCE)
+        until_dt = None
+        if since_dt:
+            print(f"Normal run - only considering leads created on/after {LEADS_SINCE}.")
+        else:
+            print("Normal run - no LEADS_SINCE cutoff set, considering all unprocessed leads.")
+
+    print(f"TEST_MODE is {'ON' if TEST_MODE else 'OFF'} "
+          f"({'agent emails redirected to ' + TEST_RECIPIENT_EMAIL if TEST_MODE else 'sending to real agents'}).")
+
     forms = get_lead_forms()
     print(f"Found {len(forms)} lead forms on the Page.")
 
     sent_count = 0
     alert_count = 0
+    skipped_out_of_range = 0
 
     for form in forms:
         form_id = form["id"]
@@ -350,7 +418,19 @@ def main():
             print(f"  ! Could not fetch leads for form '{form_name}': {e}")
             continue
 
-        new_leads = [l for l in leads if l["id"] not in processed]
+        candidate_leads = [l for l in leads if l["id"] not in processed]
+
+        new_leads = []
+        for lead in candidate_leads:
+            created_dt = parse_lead_created_time(lead.get("created_time", ""))
+            if since_dt and (created_dt is None or created_dt < since_dt):
+                skipped_out_of_range += 1
+                continue
+            if until_dt and (created_dt is None or created_dt > until_dt):
+                skipped_out_of_range += 1
+                continue
+            new_leads.append(lead)
+
         if not new_leads:
             continue
 
@@ -372,15 +452,23 @@ def main():
                     phone=phone,
                     qa_pairs=qa_pairs,
                 )
+                real_recipient = route["recipient_email"]
+                to_email = TEST_RECIPIENT_EMAIL if TEST_MODE else real_recipient
                 subject = f"Nuevo Lead: {route['campaign_label']} - {name}".strip()
+                if TEST_MODE:
+                    subject = f"[PRUEBA - iría a {real_recipient}] {subject}"
                 try:
-                    send_email(route["recipient_email"], subject, html)
-                    print(f"  -> Sent lead {lead_id} ({form_name}) to {route['recipient_email']}")
+                    send_email(to_email, subject, html)
+                    if TEST_MODE:
+                        print(f"  -> [TEST MODE] Lead {lead_id} ({form_name}) would go to "
+                              f"{real_recipient}; sent to {to_email} instead")
+                    else:
+                        print(f"  -> Sent lead {lead_id} ({form_name}) to {to_email}")
                     processed.add(lead_id)
                     sent_count += 1
                     time.sleep(2)  # small, polite gap between sends
                 except Exception as e:
-                    print(f"  ! FAILED to send lead {lead_id} to {route['recipient_email']}: {e}")
+                    print(f"  ! FAILED to send lead {lead_id} to {to_email}: {e}")
                     # Do not mark as processed - we'll retry next run.
             else:
                 if lead_id in alerted:
@@ -400,7 +488,8 @@ def main():
     state["alerted"] = sorted(alerted)
     save_state(state)
 
-    print(f"Done. Sent {sent_count} lead email(s), {alert_count} alert(s).")
+    print(f"Done. Sent {sent_count} lead email(s), {alert_count} alert(s), "
+          f"skipped {skipped_out_of_range} lead(s) outside the date window.")
 
 
 if __name__ == "__main__":
