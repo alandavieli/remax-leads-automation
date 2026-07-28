@@ -5,6 +5,52 @@ forms, figures out which agent should get each one, builds the same
 branded HTML email your old tool made, and sends it automatically. No more
 manually copying leads out of the Leads Center.
 
+## Launching a new campaign? Read this first
+
+**Re-launching an ad for a property/campaign you already have set up** (same
+Facebook lead form, just new budget or a new month): do nothing. The robot
+matches by the form's name, not by which ad or campaign is spending money on
+it, so leads from the relaunched ad flow through automatically.
+
+**Launching an ad for a brand-new property that's never had a form before:**
+you need to add exactly one row to the Google Sheet. Takes under a minute,
+no code, no GitHub.
+
+1. Open the Google Sheet (bookmark it — the edit link, not the CSV export
+   link).
+2. Add a new row at the bottom (or higher up, see the ordering note below)
+   with:
+   - **Match Keyword**: a short piece of text that will appear in the
+     Facebook lead form's name for this property. Example: if the form is
+     going to be called "Casa en Venta Bosques de las Lomas", a keyword of
+     `Bosques de las Lomas` works.
+   - **Campaign Label**: the friendly name shown in the email header, e.g.
+     "Casa en Venta Bosques de las Lomas".
+   - **Property Link**: the SIR listing link, if there is one. Leave blank
+     if not applicable.
+   - **Recipient Name**: the agent's name, for your own reference.
+   - **Recipient Email**: the agent's email — this is where the lead
+     actually gets sent.
+3. That's it. Save the Sheet (Google Sheets auto-saves). The next check
+   (within 10 minutes) will pick up any lead on that form automatically.
+
+**How do I know the keyword will match?** The check is simple: does the
+keyword appear anywhere inside the actual Facebook form name, ignoring
+capitalization? When in doubt, use a distinctive piece of the property's
+address or name rather than a generic word — a keyword like `Casa` would
+accidentally match dozens of unrelated forms.
+
+**If you get the keyword wrong or forget to add the row:** nothing breaks
+and nobody gets skipped. You'll get an "⚠️ Lead sin campaña asignada" alert
+email at the ads mailbox with the lead's full info. Add or fix the row, and
+that same lead will go out automatically on the next run — you never need
+to resend it by hand.
+
+**Row order matters.** Rows are checked top to bottom and the first keyword
+that matches wins. If a new property's name could accidentally overlap with
+an existing keyword (e.g. two campaigns both containing "Polanco"), put the
+more specific one above the more generic one.
+
 ## The only thing you need to maintain: the Google Sheet
 
 Everything about "who gets what" lives in one Google Sheet — never in code.
