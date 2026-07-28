@@ -53,9 +53,15 @@ jobs:
           TEST_MODE: ${{ vars.TEST_MODE }}
           TEST_RECIPIENT_EMAIL: ${{ vars.TEST_RECIPIENT_EMAIL }}
           LEADS_SINCE: ${{ vars.LEADS_SINCE }}
-          BACKFILL_SINCE: ${{ github.event.inputs.backfill_since }}
-          BACKFILL_UNTIL: ${{ github.event.inputs.backfill_until }}
-          BACKFILL_FORCE: ${{ github.event.inputs.backfill_force }}
+          # Manual "Run workflow" inputs take priority (for one-off tests);
+          # otherwise these fall back to the persistent repo Variables below,
+          # so a backfill window set there stays active on every run -
+          # including the normal 10-minute scheduled check-ins. That's what
+          # lets a throttled backfill trickle out over many runs on its own.
+          BACKFILL_SINCE: ${{ github.event.inputs.backfill_since || vars.BACKFILL_SINCE }}
+          BACKFILL_UNTIL: ${{ github.event.inputs.backfill_until || vars.BACKFILL_UNTIL }}
+          BACKFILL_FORCE: ${{ github.event.inputs.backfill_force || vars.BACKFILL_FORCE }}
+          BACKFILL_MAX_PER_RUN: ${{ vars.BACKFILL_MAX_PER_RUN }}
         run: python check_leads.py
 
       - name: Save memory of processed leads
