@@ -564,20 +564,26 @@ def main():
                 if TEST_MODE:
                     subject = f"[PRUEBA - iría a {real_recipient}] {subject}"
                 bcc_email = None if TEST_MODE else AGENT_EMAIL_BCC
+                # Log a human-readable label (agent name, falling back to the
+                # campaign name), never the raw email address - this file's
+                # Actions run logs are visible to anyone with repo access,
+                # and the repo is public, so agent email addresses must never
+                # be printed here.
+                recipient_label = route["recipient_name"] or route["campaign_label"]
                 try:
                     smtp.send(to_email, subject, html, bcc_email=bcc_email)
                     if TEST_MODE:
                         print(f"  -> [TEST MODE] Lead {lead_id} ({form_name}) would go to "
-                              f"{real_recipient}; sent to {to_email} instead")
+                              f"{recipient_label}; redirected to the test inbox instead")
                     else:
-                        print(f"  -> Sent lead {lead_id} ({form_name}) to {to_email}")
+                        print(f"  -> Sent lead {lead_id} ({form_name}) to {recipient_label}")
                     processed.add(lead_id)
                     sent_count += 1
                     if is_throttled:
                         throttled_sent += 1
                     time.sleep(1)  # small, polite gap between sends
                 except Exception as e:
-                    print(f"  ! FAILED to send lead {lead_id} ({form_name}) to {to_email}: {e}")
+                    print(f"  ! FAILED to send lead {lead_id} ({form_name}) to {recipient_label}: {e}")
                     # Do not mark as processed - we'll retry next run.
             else:
                 if lead_id in alerted and not force_resend:
