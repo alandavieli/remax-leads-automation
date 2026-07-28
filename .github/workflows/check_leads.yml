@@ -1,0 +1,49 @@
+name: Check for new Meta leads and email agents
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check-leads:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run lead check
+        env:
+          FB_PAGE_ID: ${{ vars.FB_PAGE_ID }}
+          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+          ROUTING_SHEET_CSV_URL: ${{ vars.ROUTING_SHEET_CSV_URL }}
+          SMTP_HOST: ${{ vars.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          FROM_NAME: ${{ vars.FROM_NAME }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+        run: python check_leads.py
+
+      - name: Save memory of processed leads
+        run: |
+          git config user.name "remax-leads-bot"
+          git config user.email "actions@github.com"
+          if ! git diff --quiet -- state.json; then
+            git add state.json
+            git commit -m "Update processed leads log [skip ci]"
+            git push
+          else
+            echo "No new leads processed - nothing to commit."
+          fi
