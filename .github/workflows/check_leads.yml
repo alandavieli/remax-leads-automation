@@ -24,6 +24,17 @@ on:
 permissions:
   contents: write   # needed so the workflow can save state.json back to the repo
 
+# Only ever let ONE run of this workflow execute at a time. Without this, an
+# external pinger (or a scheduled run landing close to a manual one) could
+# overlap with an in-progress run, and both would read the same state.json
+# before either finishes - risking the same lead being emailed twice.
+# cancel-in-progress is deliberately false: if a run is mid-send when a new
+# trigger comes in, we queue behind it and let it finish cleanly rather than
+# killing it partway through (which could leave a sent email un-recorded).
+concurrency:
+  group: check-leads-single-runner
+  cancel-in-progress: false
+
 jobs:
   check-leads:
     runs-on: ubuntu-latest
