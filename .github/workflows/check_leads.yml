@@ -5,7 +5,7 @@ on:
     # Every 10 minutes. GitHub may delay this slightly under load, but it
     # will never skip a lead - it just checks everything since the last run.
     - cron: "*/10 * * * *"
-  workflow_dispatch:   # lets us trigger it manually from the Actions tab
+  workflow_dispatch: # lets us trigger it manually from the Actions tab
     inputs:
       backfill_since:
         description: "Backfill leads from this date (YYYY-MM-DD). Leave blank for a normal run."
@@ -22,7 +22,7 @@ on:
         default: false
 
 permissions:
-  contents: write   # needed so the workflow can save state.json back to the repo
+  contents: write # needed so the workflow can save state.json back to the repo
 
 # Only ever let ONE run of this workflow execute at a time. Without this, an
 # external pinger (or a scheduled run landing close to a manual one) could
@@ -79,10 +79,38 @@ jobs:
         run: |
           git config user.name "remax-leads-bot"
           git config user.email "actions@github.com"
-          if ! git diff --quiet -- state.json; then
+
+          if git diff --quiet -- state.json; then
+            echo "No new leads processed - nothing to commit."
+            exit 0
+          fi
+
+          # Keep the state.json this run produced. We re-apply it on top of
+          # the latest main on every retry instead of merging/rebasing, so a
+          # push collision with another run can never cause a text conflict.
+          cp state.json /tmp/state.json.new
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            cp /tmp/state.json.new state.json
+
+            if git diff --quiet -- state.json; then
+              echo "Another run already saved these same leads - nothing left to push."
+              exit 0
+            fi
+
             git add state.json
             git commit -m "Update processed leads log [skip ci]"
-            git push
-          else
-            echo "No new leads processed - nothing to commit."
-          fi
+
+            if git push origin HEAD:main; then
+              echo "Pushed state.json successfully on attempt $attempt."
+              exit 0
+            fi
+
+            echo "Push rejected on attempt $attempt (another run pushed first) - retrying..."
+            sleep $((RANDOM % 5 + 1))
+          done
+
+          echo "::error::Failed to push state.json after 5 attempts. A lead may get re-sent on the next run - check manually."
+          exit 1
