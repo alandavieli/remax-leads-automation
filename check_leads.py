@@ -103,6 +103,13 @@ BACKFILL_FORCE = os.environ.get("BACKFILL_FORCE", "false").strip().lower() in ("
 # Leave at 0 (or unset) for no cap - normal backfill behavior.
 BACKFILL_MAX_PER_RUN = int((os.environ.get("BACKFILL_MAX_PER_RUN", "0").strip() or "0"))
 
+# Optional: restrict a backfill run to a single lead form (by its Facebook
+# form id). Leave unset for a normal backfill across every form. This exists
+# so a targeted re-send - e.g. "re-verify every lead on ONE campaign actually
+# reached its agent" - never touches any other campaign/agent's mail, even if
+# BACKFILL_FORCE is on.
+BACKFILL_FORM_ID = os.environ.get("BACKFILL_FORM_ID", "").strip()
+
 STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
 
 GRAPH_API_VERSION = "v25.0"
@@ -398,7 +405,26 @@ class SmtpClient:
         for attempt in range(2):
             try:
                 self._ensure_connected()
-                self._server.sendmail(SMTP_USERNAME, envelope_recipients, msg.as_string())
+                # IMPORTANT: smtplib.sendmail() only *raises* if EVERY
+                # recipient is refused. If some recipients are accepted and
+                # others aren't, it returns normally with a dict of the
+                # refused ones - so a real delivery failure (e.g. the actual
+                # agent's mailbox being rejected while the Bcc copy still
+                # went through, or vice versa) was previously being treated
+                # as a full success and silently swallowed. We now check
+                # that return value instead of ignoring it.
+                refused = self._server.sendmail(
+                    SMTP_USERNAME, envelope_recipients, msg.as_string()
+                )
+                if to_email in refused:
+                    code, resp_msg = refused[to_email]
+                    raise smtplib.SMTPRecipientsRefused({to_email: (code, resp_msg)})
+                if bcc_email and bcc_email in refused:
+                    code, resp_msg = refused[bcc_email]
+                    print(f"  ! Bcc copy was refused by the mail server for "
+                          f"'{subject}': {code} {resp_msg!r} - the primary "
+                          f"recipient still received it, so this is not treated "
+                          f"as a failed send.")
                 return
             except Exception as e:
                 last_error = e
@@ -484,6 +510,9 @@ def main():
                     if BACKFILL_MAX_PER_RUN else " (no cap)")
         print(f"Backfill window ALSO active: {BACKFILL_SINCE or 'the beginning'} "
               f"to {BACKFILL_UNTIL or 'now'}{cap_note}.")
+        if BACKFILL_FORM_ID:
+            print(f"Backfill is scoped to form {BACKFILL_FORM_ID} ONLY - "
+                  f"every other form behaves as a normal run (live window only).")
 
     print(f"TEST_MODE is {'ON' if TEST_MODE else 'OFF'} "
           f"({'agent emails redirected to ' + TEST_RECIPIENT_EMAIL if TEST_MODE else 'sending to real agents'}).")
@@ -528,7 +557,13 @@ def main():
                 print(f"  [debug]   id={l.get('id')} created_time={l.get('created_time')!r} "
                       f"already_processed={l.get('id') in processed} already_alerted={l.get('id') in alerted}")
 
-        if force_resend:
+        # If BACKFILL_FORM_ID is set, backfill (and BACKFILL_FORCE) only ever
+        # apply to that one form - every other form is treated as a normal,
+        # live-window-only run regardless of the backfill settings above.
+        form_in_backfill_scope = not BACKFILL_FORM_ID or form_id == BACKFILL_FORM_ID
+        force_resend_this_form = force_resend and form_in_backfill_scope
+
+        if force_resend_this_form:
             candidate_leads = leads
         else:
             candidate_leads = [l for l in leads if l["id"] not in processed]
@@ -537,9 +572,11 @@ def main():
         for lead in candidate_leads:
             created_dt = parse_lead_created_time(lead.get("created_time", ""))
             in_live = live_since_dt is None or (created_dt is not None and created_dt >= live_since_dt)
-            in_backfill = has_backfill and created_dt is not None and (
-                (backfill_since_dt is None or created_dt >= backfill_since_dt)
-                and (backfill_until_dt is None or created_dt <= backfill_until_dt)
+            in_backfill = (
+                has_backfill and form_in_backfill_scope and created_dt is not None and (
+                    (backfill_since_dt is None or created_dt >= backfill_since_dt)
+                    and (backfill_until_dt is None or created_dt <= backfill_until_dt)
+                )
             )
             if not in_live and not in_backfill:
                 if created_dt is None:
@@ -606,7 +643,7 @@ def main():
                     print(f"  ! FAILED to send lead {lead_id} ({form_name}) to {recipient_label}: {e}")
                     # Do not mark as processed - we'll retry next run.
             else:
-                if lead_id in alerted and not force_resend:
+                if lead_id in alerted and not force_resend_this_form:
                     continue
                 html = build_alert_html(
                     form_name, lead_id, lead.get("created_time", ""), name, email, phone, qa_pairs
