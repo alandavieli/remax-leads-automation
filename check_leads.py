@@ -8,12 +8,12 @@ What this does, every time it runs:
    Facebook ad form goes to which agent.
 2. Asks Facebook for every lead form on the Page, and every lead on each form.
 3. For any lead we haven't emailed yet:
-     - Matches its ad/form name against the routing table (by keyword).
-     - Builds the same branded HTML email Alan's old tool produced.
-     - Sends it via the RE/MAX ads mailbox (Migadu SMTP).
-     - If NO routing match is found, emails an alert instead, so no lead
-       is ever silently lost - it just means someone needs to add a row
-       to the Google Sheet.
+   - Matches its ad/form name against the routing table (by keyword).
+   - Builds the same branded HTML email Alan's old tool produced.
+   - Sends it via the RE/MAX ads mailbox (Migadu SMTP).
+   - If NO routing match is found, emails an alert instead, so no lead
+     is ever silently lost - it just means someone needs to add a row
+     to the Google Sheet.
 4. Remembers what it already sent (state.json) so it never double-sends,
    and commits that memory file back to the repo.
 
@@ -278,53 +278,53 @@ def build_email_html(campaign_label, property_link, name, email, phone, qa_pairs
     for label, answer in qa_pairs:
         questions_html += (
             '<div class="question"><strong>{label}</strong><br>\n'
-            "          {answer}</div>\n      \n"
+            "  {answer}</div>\n  \n"
         ).format(label=esc(label), answer=esc(answer))
 
     link_block = ""
     if property_link:
         link_block = (
             '<div class="link"><strong>Link de la propiedad de interés en el SIR:</strong><br>\n'
-            f'        <a href="{esc(property_link)}">{esc(property_link)}</a></div>\n'
+            f'  <a href="{esc(property_link)}">{esc(property_link)}</a></div>\n'
         )
 
     return f"""<!DOCTYPE html>
 <html>
-  <head>
-    <meta http-equiv="content-type" content="text/html; charset=UTF-8">
-  </head>
-  <body>
-    <p>
-      <meta charset="UTF-8">
-      <style>{EMAIL_STYLE}</style>
-      <h2>Nuevo lead de Meta Ads registrado</h2>
-      <div class="info-box">
-        <p style="margin:5px 0"><strong>Campaña:</strong> {esc(campaign_label)}</p>
-      </div>
-      <h3>Datos del Lead:</h3>
-      <table>
-        <tbody>
-          <tr>
-            <td class="label">Nombre:</td>
-            <td>{esc(name)}</td>
-          </tr>
-          <tr>
-            <td class="label">Email:</td>
-            <td><a href="mailto:{esc(email)}">{esc(email)}</a></td>
-          </tr>
-          <tr>
-            <td class="label">Teléfono:</td>
-            <td>{esc(phone)}</td>
-          </tr>
-        </tbody>
-      </table>
-      {wa_block}
-      <h3>Respuestas del formulario de filtración:</h3>
-      {questions_html}
-      {link_block}
-      <br>
-    </p>
-  </body>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+</head>
+<body>
+<p>
+<meta charset="UTF-8">
+<style>{EMAIL_STYLE}</style>
+<h2>Nuevo lead de Meta Ads registrado</h2>
+<div class="info-box">
+<p style="margin:5px 0"><strong>Campaña:</strong> {esc(campaign_label)}</p>
+</div>
+<h3>Datos del Lead:</h3>
+<table>
+<tbody>
+<tr>
+<td class="label">Nombre:</td>
+<td>{esc(name)}</td>
+</tr>
+<tr>
+<td class="label">Email:</td>
+<td><a href="mailto:{esc(email)}">{esc(email)}</a></td>
+</tr>
+<tr>
+<td class="label">Teléfono:</td>
+<td>{esc(phone)}</td>
+</tr>
+</tbody>
+</table>
+{wa_block}
+<h3>Respuestas del formulario de filtración:</h3>
+{questions_html}
+{link_block}
+<br>
+</p>
+</body>
 </html>"""
 
 
@@ -462,14 +462,14 @@ def main():
 
     # Work out the effective date window(s) for this run. Two windows can be
     # active at the same time:
-    #  - the LIVE window (LEADS_SINCE): always processed immediately, no cap
-    #    - this is what keeps today's real leads flowing out without delay.
-    #  - the BACKFILL window (BACKFILL_SINCE/UNTIL): a historical range being
-    #    deliberately (re-)released. If BACKFILL_MAX_PER_RUN is set, only
-    #    that many backfill-window sends happen in this run - the window
-    #    stays active across future runs (including the normal 10-minute
-    #    scheduled check-ins) so the rest trickle out gradually instead of
-    #    landing all at once.
+    # - the LIVE window (LEADS_SINCE): always processed immediately, no cap
+    #   - this is what keeps today's real leads flowing out without delay.
+    # - the BACKFILL window (BACKFILL_SINCE/UNTIL): a historical range being
+    #   deliberately (re-)released. If BACKFILL_MAX_PER_RUN is set, only
+    #   that many backfill-window sends happen in this run - the window
+    #   stays active across future runs (including the normal 10-minute
+    #   scheduled check-ins) so the rest trickle out gradually instead of
+    #   landing all at once.
     live_since_dt = parse_date_boundary(LEADS_SINCE)
     if live_since_dt:
         print(f"Live window: considering leads created on/after {LEADS_SINCE} (no cap).")
@@ -495,6 +495,12 @@ def main():
 
     forms = get_lead_forms()
     print(f"Found {len(forms)} lead forms on the Page.")
+    # Diagnostic: list every form this Page token can actually see, so a
+    # lead that never gets processed or alerted on can be traced back to
+    # whether its form is visible to the API at all (vs. some other bug
+    # further down the pipeline).
+    for f in forms:
+        print(f"   - form {f.get('id')}: {f.get('name', '(no name)')} [{f.get('status', '?')}]")
 
     smtp = SmtpClient()
     sent_count = 0
@@ -613,7 +619,7 @@ def main():
                f"skipped {skipped_out_of_range} lead(s) outside the date window.")
     if has_backfill:
         summary += (f" Backfill: {throttled_sent} sent this run, "
-                     f"{throttled_deferred} held back for a later run.")
+                    f"{throttled_deferred} held back for a later run.")
     print(summary)
 
 
