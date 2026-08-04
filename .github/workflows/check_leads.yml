@@ -20,6 +20,10 @@ on:
         required: false
         type: boolean
         default: false
+      backfill_form_id:
+        description: "Restrict the backfill above to ONE Facebook form id. Leave blank to backfill across every form."
+        required: false
+        type: string
 
 permissions:
   contents: write # needed so the workflow can save state.json back to the repo
@@ -73,6 +77,7 @@ jobs:
           BACKFILL_UNTIL: ${{ github.event.inputs.backfill_until || vars.BACKFILL_UNTIL }}
           BACKFILL_FORCE: ${{ github.event.inputs.backfill_force || vars.BACKFILL_FORCE }}
           BACKFILL_MAX_PER_RUN: ${{ vars.BACKFILL_MAX_PER_RUN }}
+          BACKFILL_FORM_ID: ${{ github.event.inputs.backfill_form_id || vars.BACKFILL_FORM_ID }}
         run: python check_leads.py
 
       - name: Save memory of processed leads
