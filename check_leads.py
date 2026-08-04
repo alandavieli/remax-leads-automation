@@ -518,6 +518,16 @@ def main():
             print(f"  ! Could not fetch leads for form '{form_name}': {e}")
             continue
 
+        # TEMPORARY DEBUG (remove once the Granada LIVIX missing-lead
+        # mystery is solved): dump every raw lead this specific form
+        # returns from the API, regardless of any filtering below, so we
+        # can see exactly what Facebook is handing back for it.
+        if form_id == "28004656892556681":
+            print(f"  [debug] form {form_id} raw API returned {len(leads)} lead(s):")
+            for l in leads:
+                print(f"  [debug]   id={l.get('id')} created_time={l.get('created_time')!r} "
+                      f"already_processed={l.get('id') in processed} already_alerted={l.get('id') in alerted}")
+
         if force_resend:
             candidate_leads = leads
         else:
@@ -532,6 +542,10 @@ def main():
                 and (backfill_until_dt is None or created_dt <= backfill_until_dt)
             )
             if not in_live and not in_backfill:
+                if created_dt is None:
+                    print(f"  ! Lead {lead.get('id')} on form '{form_name}' has an "
+                          f"unparseable created_time {lead.get('created_time')!r} - "
+                          f"counted as out-of-range, but may actually be a recent lead.")
                 skipped_out_of_range += 1
                 continue
             # Only leads that are ONLY in the backfill window (not also
